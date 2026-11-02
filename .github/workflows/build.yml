@@ -1,0 +1,15 @@
+name: Build TDLib for Android
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get TDLib source
+        run: git clone --depth 1 https://github.com/tdlib/td.git
+      - name: Build (takes a long time)
+        working-directory: td/example/android
+        run: docker build --output tdlib .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tdlib
+          path: td/example/android/tdlib
