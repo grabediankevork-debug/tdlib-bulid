@@ -9,7 +9,24 @@ import java.io.File
 data class Prog(val positionMs: Long, val durationMs: Long, val updated: Long)
 data class WatchRow(val name: String, val year: Int?, val uri: String, val status: String, val keys: List<String>)
 
+/**
+ * A channel the user defined. [kind]: "title" (value = comma-separated words, matches movie and series titles),
+ * "decade" (value = "1990"), "source" (value = Telegram channel name), "movies", "episodes".
+ * [mode]: "shuffle", "cyclic" (one episode per show in turn, each show in order), "blocks" (a few episodes of one
+ * show, then the next show) or "ordered" (strictly by season/episode, or by year for movies).
+ */
+data class CustomChannel(val name: String, val kind: String, val value: String, val mode: String)
+
+/** Channel settings: own channels, built-in channels to hide, and the slot length (0 = no padding). */
+data class ChannelConfig(
+    val custom: List<CustomChannel> = emptyList(),
+    val hidden: Set<String> = emptySet(),
+    val padMinutes: Int = 15,
+)
+
 interface StateStore {
+    fun channelConfig(): ChannelConfig
+    fun setChannelConfig(cfg: ChannelConfig)
     fun watchedMap(): Map<String, Long>
     fun progressMap(): Map<String, Prog>
     fun setProgress(key: String, positionMs: Long, durationMs: Long)
@@ -27,6 +44,7 @@ open class MemoryState : StateStore {
     private val progress = HashMap<String, Prog>()
     private val searches = ArrayList<String>() // newest first
     private var rows: List<WatchRow> = emptyList()
+    private var chCfg = ChannelConfig()
 
     /** called after every mutation; [FileState] persists here */
     protected open fun changed() {}
@@ -76,6 +94,13 @@ open class MemoryState : StateStore {
 
     override fun watchlist(): List<WatchRow> = synchronized(lock) { rows }
 
+    override fun channelConfig(): ChannelConfig = synchronized(lock) { chCfg }
+
+    override fun setChannelConfig(cfg: ChannelConfig) {
+        synchronized(lock) { chCfg = cfg }
+        changed()
+    }
+
     // used by FileState to load/save
     protected fun dump(): JSONObject = synchronized(lock) {
         val w = JSONObject()
@@ -89,7 +114,13 @@ open class MemoryState : StateStore {
                     .put("status", r.status).put("keys", JSONArray(r.keys)),
             )
         }
+        val cc = JSONArray()
+        for (c in chCfg.custom) {
+            cc.put(JSONObject().put("name", c.name).put("kind", c.kind).put("value", c.value).put("mode", c.mode))
+        }
+        val chan = JSONObject().put("custom", cc).put("hidden", JSONArray(chCfg.hidden.toList())).put("pad", chCfg.padMinutes)
         JSONObject().put("watched", w).put("progress", p).put("searches", JSONArray(searches)).put("watchlist", wl)
+            .put("channels", chan)
     }
 
     protected fun restore(o: JSONObject) {
@@ -124,6 +155,19 @@ open class MemoryState : StateStore {
                 }
             }
             rows = list
+            val ch = o.optJSONObject("channels")
+            chCfg = if (ch == null) ChannelConfig() else {
+                val ca = ch.optJSONArray("custom")
+                val ha = ch.optJSONArray("hidden")
+                ChannelConfig(
+                    custom = if (ca == null) emptyList() else List(ca.length()) { i ->
+                        val c = ca.getJSONObject(i)
+                        CustomChannel(c.optString("name"), c.optString("kind"), c.optString("value"), c.optString("mode", "shuffle"))
+                    },
+                    hidden = if (ha == null) emptySet() else (0 until ha.length()).map { ha.getString(it) }.toSet(),
+                    padMinutes = ch.optInt("pad", 15),
+                )
+            }
         }
     }
 }

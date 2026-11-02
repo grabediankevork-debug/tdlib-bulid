@@ -46,6 +46,11 @@ interface Backend {
     /** direct mode: the library key airing on a channel right now (null if none / server mode) */
     suspend fun liveKeyNow(channelId: String): String?
 
+    /** direct mode: channel customisation (own channels, hidden built-ins, slot length); null in server mode */
+    suspend fun channelEditor(): ChannelEditorInfo?
+    suspend fun saveChannels(cfg: ChannelConfig)
+    suspend fun previewChannel(c: CustomChannel): Int
+
     /** import a Letterboxd watchlist.csv given as text */
     suspend fun importWatchlist(csv: String)
 

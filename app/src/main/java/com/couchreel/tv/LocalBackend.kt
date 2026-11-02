@@ -139,6 +139,13 @@ class LocalBackend(
     override fun liveUrl(channelId: String): String = ""
     override suspend fun liveKeyNow(channelId: String): String? = bg { catalog.liveKeyNow(channelId) }
 
+    override suspend fun channelEditor(): ChannelEditorInfo? = bg { catalog.channelEditorInfo() }
+    override suspend fun previewChannel(c: CustomChannel): Int = bg { catalog.previewCount(c) }
+    override suspend fun saveChannels(cfg: ChannelConfig) {
+        bg { catalog.setChannelConfig(cfg) }
+        _version.value = _version.value + 1
+    }
+
     // ------------------------------------------------------------------ hub auto-join (background jobs)
 
     private fun startJob(block: suspend (JobState) -> JSONArray): String {

@@ -23,7 +23,9 @@ fun workId(item: CatalogItem): String {
 
 fun seriesId(item: CatalogItem): String = normalize(item.parsed.title)
 
-class ChannelSpec(val items: List<CatalogItem>, val ordered: Boolean)
+/** [mode]: "shuffle", "ordered", "cyclic" or "blocks" (see [CustomChannel]). */
+class ChannelSpec(val items: List<CatalogItem>, val mode: String)
+class ChannelEditorInfo(val config: ChannelConfig, val builtIn: List<String>, val decades: List<Int>, val sources: List<String>)
 class Slot(val start: ZonedDateTime, val end: ZonedDateTime, val item: CatalogItem)
 
 class Catalog(val items: List<CatalogItem>, private val state: StateStore) {
@@ -275,22 +277,82 @@ class Catalog(val items: List<CatalogItem>, private val state: StateStore) {
 
     // ------------------------------------------------------------ cable-style channels
 
-    private val channelSpecs: Map<String, ChannelSpec> by lazy { buildChannels() }
-    private val channelIds: Map<String, String> by lazy {
-        channelSpecs.keys.sorted().mapIndexed { i, name -> "ch${i + 1}" to name }.toMap(LinkedHashMap())
+    private class Built(val specs: Map<String, ChannelSpec>, val ids: Map<String, String>, val pad: Int)
+
+    @Volatile private var built: Built? = null
+
+    private fun channelSet(): Built {
+        built?.let { return it }
+        val cfg = state.channelConfig()
+        val all = LinkedHashMap<String, ChannelSpec>()
+        val used = HashSet<String>()
+        for (c in cfg.custom) {
+            val items = customItems(c)
+            if (items.isEmpty()) continue
+            var name = c.name.trim().ifEmpty { "My channel" }
+            var n = 2
+            while (!used.add(name)) name = "${c.name.trim()} ${n++}"
+            all[name] = ChannelSpec(items, c.mode)
+        }
+        for ((name, spec) in buildChannels()) {
+            if (name in cfg.hidden) continue
+            var shown = name
+            var n = 2
+            while (!used.add(shown)) shown = "$name ${n++}"
+            all[shown] = spec
+        }
+        val ids = LinkedHashMap<String, String>()
+        all.keys.sorted().forEachIndexed { i, name -> ids["ch${i + 1}"] = name }
+        return Built(all, ids, cfg.padMinutes).also { built = it }
+    }
+
+    private fun reps(): List<CatalogItem> = works.values.map { it[0] }
+
+    private fun customItems(c: CustomChannel): List<CatalogItem> {
+        val reps = reps().filter { it.parsed.title != null }
+        return when (c.kind) {
+            "title" -> {
+                val terms = c.value.split(',').map { normalize(it) }.filter { it.isNotEmpty() }
+                if (terms.isEmpty()) emptyList()
+                else reps.filter { r -> val t = normalize(r.parsed.title); terms.any { it in t } }
+            }
+            "decade" -> {
+                val d = c.value.trim().toIntOrNull() ?: return emptyList()
+                reps.filter { it.parsed.kind == "movie" && (it.parsed.year ?: -1) in d..(d + 9) }
+            }
+            "source" -> reps.filter { it.chatTitle == c.value }
+            "movies" -> reps.filter { it.parsed.kind == "movie" }
+            "episodes" -> reps.filter { it.parsed.kind == "episode" }
+            else -> emptyList()
+        }
+    }
+
+    /** how many titles a channel definition would contain (for the editor) */
+    fun previewCount(c: CustomChannel): Int = customItems(c).size
+
+    fun channelEditorInfo(): ChannelEditorInfo {
+        val reps = reps()
+        val decades = reps.filter { it.parsed.kind == "movie" }.mapNotNull { it.parsed.year }.map { it / 10 * 10 }.toSortedSet().toList()
+        val sources = reps.map { it.chatTitle }.filter { it.isNotBlank() }.toSortedSet().toList()
+        return ChannelEditorInfo(state.channelConfig(), buildChannels().keys.toList(), decades, sources)
+    }
+
+    fun setChannelConfig(cfg: ChannelConfig) {
+        state.setChannelConfig(cfg.copy(padMinutes = cfg.padMinutes.coerceIn(0, 120)))
+        built = null
     }
 
     private fun buildChannels(minMovies: Int = 3, minEpisodes: Int = 2, minSource: Int = 3): Map<String, ChannelSpec> {
         val ch = LinkedHashMap<String, ChannelSpec>()
-        val reps = works.values.map { it[0] }
+        val reps = reps()
         val movies = reps.filter { it.parsed.kind == "movie" && it.parsed.title != null }
-        if (movies.size >= minMovies) ch["Movies: Mixed"] = ChannelSpec(movies, false)
+        if (movies.size >= minMovies) ch["Movies: Mixed"] = ChannelSpec(movies, "shuffle")
         val decades = HashMap<Int, MutableList<CatalogItem>>()
         for (m in movies) {
             val y = m.parsed.year ?: continue
             decades.getOrPut(y / 10 * 10) { mutableListOf() }.add(m)
         }
-        for ((d, lst) in decades.toSortedMap()) if (lst.size >= minMovies) ch["Movies: ${d}s"] = ChannelSpec(lst, false)
+        for ((d, lst) in decades.toSortedMap()) if (lst.size >= minMovies) ch["Movies: ${d}s"] = ChannelSpec(lst, "shuffle")
         val shows = HashMap<String, MutableList<CatalogItem>>()
         for (e in reps.filter { it.parsed.kind == "episode" && it.parsed.title != null }) {
             shows.getOrPut(seriesId(e)) { mutableListOf() }.add(e)
@@ -298,19 +360,21 @@ class Catalog(val items: List<CatalogItem>, private val state: StateStore) {
         for (lst in shows.values) {
             if (lst.size >= minEpisodes) {
                 val sorted = lst.sortedWith(compareBy<CatalogItem>({ it.parsed.season ?: 0 }, { it.parsed.episode ?: 0 }))
-                ch["Series: ${sorted[0].parsed.title}"] = ChannelSpec(sorted, true)
+                ch["Series: ${sorted[0].parsed.title}"] = ChannelSpec(sorted, "ordered")
             }
         }
         for ((name, lst) in reps.groupBy { it.chatTitle }.toSortedMap()) {
-            if (lst.size >= minSource) ch["Channel: $name"] = ChannelSpec(lst, false)
+            if (lst.size >= minSource) ch["Channel: $name"] = ChannelSpec(lst, "shuffle")
         }
         val titled = reps.filter { it.parsed.title != null }
-        if (titled.size >= minMovies) ch["Mixed Bag"] = ChannelSpec(titled, false)
+        if (titled.size >= minMovies) ch["Mixed Bag"] = ChannelSpec(titled, "shuffle")
         return ch
     }
 
-    fun channelList(): List<Channel> =
-        channelIds.map { (id, name) -> Channel(id, name, channelSpecs.getValue(name).items.size) }
+    fun channelList(): List<Channel> {
+        val b = channelSet()
+        return b.ids.map { (id, name) -> Channel(id, name, b.specs.getValue(name).items.size) }
+    }
 
     private fun minutes(item: CatalogItem): Double =
         if (item.durationSec > 0) item.durationSec / 60.0
@@ -318,17 +382,55 @@ class Catalog(val items: List<CatalogItem>, private val state: StateStore) {
 
     private fun dayStart(now: ZonedDateTime): ZonedDateTime = now.toLocalDate().atStartOfDay(now.zone)
 
-    private fun schedule(spec: ChannelSpec, name: String, now: ZonedDateTime): List<Slot> {
+    private fun epKey(i: CatalogItem) = Triple(i.parsed.season ?: 0, i.parsed.episode ?: 0, i.parsed.year ?: 0)
+
+    private fun inOrder(items: List<CatalogItem>): List<CatalogItem> =
+        items.sortedWith(
+            compareBy<CatalogItem>({ normalize(it.parsed.title) }, { epKey(it).first }, { epKey(it).second }, { epKey(it).third }),
+        )
+
+    /** the order a channel plays in; same input and same day always give the same result */
+    private fun arrange(spec: ChannelSpec, name: String, day: java.time.LocalDate): List<CatalogItem> {
+        val rnd = Random("$name-$day".hashCode().toLong())
+        return when (spec.mode) {
+            "ordered" -> inOrder(spec.items)
+            "cyclic", "blocks" -> {
+                val groups = LinkedHashMap<String, MutableList<CatalogItem>>()
+                for (i in inOrder(spec.items)) {
+                    val g = if (i.parsed.kind == "episode") "s:" + seriesId(i) else "movies"
+                    groups.getOrPut(g) { mutableListOf() }.add(i)
+                }
+                groups["movies"]?.shuffle(rnd)
+                val lists = groups.values.toMutableList()
+                if (spec.mode == "blocks") lists.shuffle(rnd) else if (lists.isNotEmpty()) java.util.Collections.rotate(lists, rnd.nextInt(lists.size))
+                val take = if (spec.mode == "blocks") 3 else 1
+                val pos = IntArray(lists.size)
+                val out = ArrayList<CatalogItem>()
+                while (out.size < spec.items.size) {
+                    for ((gi, lst) in lists.withIndex()) {
+                        var n = 0
+                        while (n < take && pos[gi] < lst.size) { out.add(lst[pos[gi]++]); n++ }
+                    }
+                }
+                out
+            }
+            else -> spec.items.shuffled(rnd)
+        }
+    }
+
+    private fun schedule(spec: ChannelSpec, name: String, now: ZonedDateTime, pad: Int): List<Slot> {
         if (spec.items.isEmpty()) return emptyList()
         val start = dayStart(now)
-        val pool = if (spec.ordered) spec.items else spec.items.shuffled(Random("$name-${start.toLocalDate()}".hashCode().toLong()))
+        val pool = arrange(spec, name, start.toLocalDate())
         val end = start.plusHours(48)
         val out = ArrayList<Slot>()
         var t = start
         var i = 0
         while (t.isBefore(end)) {
             val it = pool[i % pool.size]
-            val len = Duration.ofSeconds(maxOf(60L, (minutes(it) * 60).toLong()))
+            var secs = maxOf(60L, (minutes(it) * 60).toLong())
+            if (pad > 0) { val p = pad * 60L; secs = (secs + p - 1) / p * p } // pad to the next quarter hour, like TV
+            val len = Duration.ofSeconds(secs)
             out.add(Slot(t, t.plus(len), it))
             t = t.plus(len)
             i++
@@ -348,8 +450,9 @@ class Catalog(val items: List<CatalogItem>, private val state: StateStore) {
 
     fun guide(hours: Int, now: ZonedDateTime = ZonedDateTime.now()): List<GuideChannel> {
         val end = now.plusHours(hours.toLong())
-        return channelIds.map { (id, name) ->
-            val progs = schedule(channelSpecs.getValue(name), name, now)
+        val b = channelSet()
+        return b.ids.map { (id, name) ->
+            val progs = schedule(b.specs.getValue(name), name, now, b.pad)
                 .filter { it.end.isAfter(now) && it.start.isBefore(end) }
                 .map {
                     Programme(
@@ -362,8 +465,9 @@ class Catalog(val items: List<CatalogItem>, private val state: StateStore) {
     }
 
     fun liveKeyNow(channelId: String, now: ZonedDateTime = ZonedDateTime.now()): String? {
-        val name = channelIds[channelId] ?: return null
-        return schedule(channelSpecs.getValue(name), name, now)
+        val b = channelSet()
+        val name = b.ids[channelId] ?: return null
+        return schedule(b.specs.getValue(name), name, now, b.pad)
             .firstOrNull { !it.start.isAfter(now) && it.end.isAfter(now) }?.item?.key
     }
 

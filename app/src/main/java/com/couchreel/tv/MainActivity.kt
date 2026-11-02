@@ -35,6 +35,7 @@ sealed interface Route {
     data class SeriesDetail(val sid: String) : Route
     data object Search : Route
     data object Channels : Route
+    data object ChannelEditor : Route
     data object Watchlist : Route
     data object Hubs : Route
     data object Settings : Route
@@ -225,6 +226,7 @@ private fun ConnectedApp(
             tabs.forEach { (label, target) ->
                 val selected = when (route) {
                     is Route.SeriesDetail -> target == Route.Series
+                    Route.ChannelEditor -> target == Route.Channels
                     else -> target == route
                 }
                 Chip(label, selected = selected) { go(target) }
@@ -237,7 +239,8 @@ private fun ConnectedApp(
                 Route.Series -> SeriesScreen(api, tick, go)
                 is Route.SeriesDetail -> SeriesDetailScreen(api, route.sid, tick, play)
                 Route.Search -> SearchScreen(api, tick, play, go)
-                Route.Channels -> ChannelsScreen(api, tick, playLive)
+                Route.Channels -> ChannelsScreen(api, tick, playLive) { go(Route.ChannelEditor) }
+                Route.ChannelEditor -> ChannelEditorScreen(api, tick) { go(Route.Channels) }
                 Route.Watchlist -> WatchlistScreen(api, tick, play)
                 Route.Hubs -> HubsScreen(api)
                 Route.Settings -> settingsContent(go)

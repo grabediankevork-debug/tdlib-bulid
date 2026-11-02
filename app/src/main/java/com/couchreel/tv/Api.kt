@@ -228,6 +228,10 @@ class Api(base: String, private val token: String) : Backend {
 
     override suspend fun liveKeyNow(channelId: String): String? = null
 
+    override suspend fun channelEditor(): ChannelEditorInfo? = null
+    override suspend fun saveChannels(cfg: ChannelConfig) = throw UnsupportedOperationException("Channels are set up on the server")
+    override suspend fun previewChannel(c: CustomChannel): Int = 0
+
     override suspend fun importWatchlist(csv: String) {
         exec(Request.Builder().url(url("api/watchlist")).post(csv.toRequestBody("text/csv".toMediaType())).build())
     }

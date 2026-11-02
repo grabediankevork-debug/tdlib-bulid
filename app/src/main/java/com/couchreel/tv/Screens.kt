@@ -411,10 +411,10 @@ fun SearchScreen(api: Backend, tick: Int, play: Play, go: (Route) -> Unit) {
 // ================================================================== CHANNELS (cable-style guide)
 
 @Composable
-fun ChannelsScreen(api: Backend, tick: Int, playLive: (String, String) -> Unit) {
+fun ChannelsScreen(api: Backend, tick: Int, playLive: (String, String) -> Unit, onEdit: () -> Unit) {
     val ui by loadState(tick) { api.guide(6) }
     Gate(ui) { channels ->
-        if (channels.isEmpty()) {
+        if (channels.isEmpty() && !api.isLocal) {
             Centered("No channels yet.\nThey are built from your library (needs a few movies or a series).")
         } else {
             LazyColumn(
@@ -422,11 +422,24 @@ fun ChannelsScreen(api: Backend, tick: Int, playLive: (String, String) -> Unit) 
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(vertical = 6.dp),
             ) {
+                if (api.isLocal) {
+                    item(key = "edit") {
+                        ButtonRow { Chip("Edit channels", Modifier.focusMemory("channels", "edit", true)) { onEdit() } }
+                    }
+                    if (channels.isEmpty()) {
+                        item(key = "none") {
+                            Text(
+                                "No channels yet. They are built from your library, or press “Edit channels” to make your own.",
+                                color = TextDim, fontSize = 16.sp,
+                            )
+                        }
+                    }
+                }
                 lazyItemsIndexed(channels, key = { _, it -> it.id }) { i, ch ->
                     val now = ch.programmes.firstOrNull { it.onNow }
                     val upcoming = ch.programmes.filter { !it.onNow }.take(2)
                     PanelRow(
-                        modifier = Modifier.focusMemory("channels", ch.id, defaultFirst = i == 0),
+                        modifier = Modifier.focusMemory("channels", ch.id, defaultFirst = i == 0 && !api.isLocal),
                         onClick = { playLive(ch.id, ch.name) },
                     ) {
                         Text(ch.name, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
