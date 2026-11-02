@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.Couchreel" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#FF12141A</item>
-        <item name="android:colorBackground">#FF12141A</item>
-        <item name="android:statusBarColor">#FF12141A</item>
-        <item name="android:navigationBarColor">#FF12141A</item>
-    </style>
-</resources>
